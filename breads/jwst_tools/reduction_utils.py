@@ -127,6 +127,15 @@ def run_stage2(rate_files, output_dir, skip_cubes=True, overwrite=False):
             print(f"Output file {outname} already exists;\n\tskipping {rate_file}.")
             continue
 
+
+        # special case -- check if the input file is a target acq file, 
+        # if so then don't try to run the spec2 pipeline on it since that will fail
+        with jwst.datamodels.open(rate_file) as model:
+            if model.meta.exposure.type in ['NRS_WATA', 'NRS_TACONFIRM']:
+                print(f"File {rate_file} is a target acquisition exposure; setting this aside with no further processing.")
+                continue
+
+
         spec2 = Spec2Pipeline()
         #spec2.output_dir = spec2_dir
 
@@ -429,6 +438,10 @@ def run_complete_stage1_2_clean_reduction(input_dir, output_root_dir=None, overw
 
     This will run the complete reduction from uncal files to cal files. It will take a while.
 
+    The noise reduction currently requires both stage1 and stage2 outputs to run. This
+    means we have to run the stage2 processing twice. This is admittedly not ideal, and
+    may be improved in a future version.
+
     If files already exist, repeat reductions are skipped, unless overwrite is set True
     """
 
@@ -446,6 +459,7 @@ def run_complete_stage1_2_clean_reduction(input_dir, output_root_dir=None, overw
 
     # Run all reduction steps
     rate_files = run_stage1(uncal_files, output_dir=det1_dir, overwrite=overwrite)
+    cal_files = run_stage2(rate_files, output_dir=spec2_dir, overwrite=overwrite)
     cleaned_rate_files = run_noise_clean(rate_files, spec2_dir, clean_det1_dir, overwrite=overwrite)
     cleaned_cal_files = run_stage2(cleaned_rate_files, output_dir=clean_spec2_dir, overwrite=overwrite)
 
