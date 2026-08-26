@@ -41,7 +41,7 @@ import numpy as np
 
 from breads.fit import fitfm
 from breads.instruments import Instrument
-from breads.jwst_tools.splines import _tmp_fm, fit_3dspline
+from breads.jwst_tools.splines import _build_3dspline_basis, _tmp_fm, fit_3dspline
 from breads.utils import get_spline_model
 
 REFERENCE_FILE = os.path.join(os.path.dirname(__file__), "data", "test_splines_reference.npz")
@@ -258,11 +258,11 @@ def test_fit_3dspline_matches_reference_snapshot():
 # ---------------------------------------------------------------------------
 
 def test_3d_design_matrix_tile_and_broadcast_agree():
-    """``np.tile`` and plain broadcasting must build the same design matrix.
+    """``_build_3dspline_basis`` must match the original ``np.tile`` construction.
 
-    ``_task_fit_3dspline`` currently materializes three full tiled arrays before
-    multiplying them. Broadcasting is mathematically identical but allocates far
-    less memory. This test pins the equivalence so the substitution is safe.
+    ``_task_fit_3dspline`` previously materialized three full tiled arrays
+    before multiplying them. Broadcasting is mathematically identical but
+    allocates far less memory. This test pins the equivalence.
 
     Note the operand order is significant: floating point multiplication is not
     associative, so the broadcast form must multiply in the same ``x * y * wvs``
@@ -275,24 +275,19 @@ def test_3d_design_matrix_tile_and_broadcast_agree():
     M_wvs = rng.random((n_pix, n_wv))
     M_y = rng.random((n_pix, n_y))
     M_x = rng.random((n_pix, n_x))
-    stellar_features = rng.random(n_pix)
 
-    # Current implementation, mirroring breads/jwst_tools/splines.py
+    # Original implementation, retained here as the reference
     tiled = (np.tile(M_x[:, None, None, :], (1, n_wv, n_y, 1))
              * np.tile(M_y[:, None, :, None], (1, n_wv, 1, n_x))
              * np.tile(M_wvs[:, :, None, None], (1, 1, n_y, n_x)))
-    tiled = tiled.reshape((n_pix, -1)) * stellar_features[:, None]
+    tiled = tiled.reshape((n_pix, -1))
 
-    # Proposed broadcast equivalent, preserving the operand order
-    broadcast = (M_x[:, None, None, :] * M_y[:, None, :, None]) * M_wvs[:, :, None, None]
-    broadcast = broadcast.reshape((n_pix, -1)) * stellar_features[:, None]
-
-    np.testing.assert_array_equal(tiled, broadcast)
+    np.testing.assert_array_equal(tiled, _build_3dspline_basis(M_x, M_y, M_wvs))
 
     # Guard the claim above: reordering really does perturb the result, so the
     # order-preserving form is the one that must be used.
     reordered = (M_wvs[:, :, None, None] * M_y[:, None, :, None] * M_x[:, None, None, :])
-    reordered = reordered.reshape((n_pix, -1)) * stellar_features[:, None]
+    reordered = reordered.reshape((n_pix, -1))
     np.testing.assert_allclose(reordered, tiled, rtol=1e-12, atol=1e-15)
 
 

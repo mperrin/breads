@@ -270,6 +270,24 @@ def normalize_rows(image, im_wvs, noise=None, badpixs=None, stellar_features=Non
 
     return new_image, new_noise, new_badpixs, new_res,new_spline_paras
 
+def _build_3dspline_basis(M_spline_x, M_spline_y, M_spline_wvs):
+    """Build the separable 3D spline design matrix from its 1D bases.
+
+    Returns an array of shape ``(N_pix, N_wv * N_y * N_x)``.
+
+    This uses broadcasting rather than materializing three fully tiled
+    ``(N_pix, N_wv, N_y, N_x)`` intermediates, which dominated peak memory in
+    the 3D spline fit. The operand order is deliberate: floating point
+    multiplication is not associative, so preserving the original
+    ``x * y * wvs`` order keeps this bit-for-bit identical to the previous
+    ``np.tile`` based implementation.
+    """
+    M_3dspline = (M_spline_x[:, None, None, :] * M_spline_y[:, None, :, None]) \
+                 * M_spline_wvs[:, :, None, None]
+    # flatten the last 3 dimensions
+    return M_3dspline.reshape((M_3dspline.shape[0], -1))
+
+
 def _tmp_fm(nonlin_paras, data_obj: "Instrument"):
     _d,M,_e,d_reg,s_reg = nonlin_paras
     if d_reg is not None and s_reg is not None:
@@ -354,11 +372,7 @@ def _task_fit_3dspline(paras):
     M_spline_y = get_spline_model(_y_nodes, _y, spline_degree=3)
     M_spline_wvs = get_spline_model(wv_nodes, _w, spline_degree=3)
 
-    M_spline_x_tiled = np.tile(M_spline_x[:,None,None,:], (1,np.size(wv_nodes), np.size(_y_nodes), 1))
-    M_spline_y_tiled = np.tile(M_spline_y[:,None,:,None], (1,np.size(wv_nodes), 1, np.size(_x_nodes)))
-    M_spline_wvs_tiled = np.tile(M_spline_wvs[:,:,None,None], (1,1, np.size(_y_nodes), np.size(_x_nodes)))
-    M_3dspline = M_spline_x_tiled * M_spline_y_tiled * M_spline_wvs_tiled
-    M_3dspline = M_3dspline.reshape((M_3dspline.shape[0], -1)) # flatten the last 3 dimensions
+    M_3dspline = _build_3dspline_basis(M_spline_x, M_spline_y, M_spline_wvs)
 
     M = M_3dspline * stellar_features_np[where_data_finite][:, None]
 
@@ -654,11 +668,7 @@ def _task_evaluate_3dspline(paras):
     M_spline_y = get_spline_model(_y_nodes, _y, spline_degree=3)
     M_spline_wvs = get_spline_model(wv_nodes, _w, spline_degree=3)
 
-    M_spline_x_tiled = np.tile(M_spline_x[:,None,None,:], (1,np.size(wv_nodes), np.size(_y_nodes), 1))
-    M_spline_y_tiled = np.tile(M_spline_y[:,None,:,None], (1,np.size(wv_nodes), 1, np.size(_x_nodes)))
-    M_spline_wvs_tiled = np.tile(M_spline_wvs[:,:,None,None], (1,1, np.size(_y_nodes), np.size(_x_nodes)))
-    M_3dspline = M_spline_x_tiled * M_spline_y_tiled * M_spline_wvs_tiled
-    M_3dspline = M_3dspline.reshape((M_3dspline.shape[0], -1)) # flatten the last 3 dimensions
+    M_3dspline = _build_3dspline_basis(M_spline_x, M_spline_y, M_spline_wvs)
 
     M = M_3dspline * stellar_features_np[where_data_finite][:, None]
     m = np.dot(M, np.ravel(spline3d_paras_np[m0,m1,:,l0:l3+1,k0:k3+1]))
