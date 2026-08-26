@@ -304,7 +304,7 @@ def _task_fit_3dspline(paras):
 
     from breads.instruments import Instrument   # runtime import here to avoid circular import problem
 
-    stamp_ids, x_nodes, y_nodes,wv_nodes, wv_ref, stellar_features, threshold, reg_mean_map, reg_std_map, types_tuple = paras
+    stamp_ids, x_nodes, y_nodes,wv_nodes, threshold, reg_mean_map, reg_std_map, types_tuple = paras
     mp_float_type, mp_bp_type = types_tuple
 
 
@@ -567,7 +567,7 @@ def fit_3dspline(dataobj,x_nodes,y_nodes,wv_nodes,
         for id,stamp_ids in enumerate(stamp_list):
             print(id, stamp_ids)
             paras = stamp_ids, x_nodes, y_nodes,wv_nodes,\
-                    wv_ref, stellar_features, threshold, reg_mean_map, reg_std_map,types_tuple
+                    threshold, reg_mean_map, reg_std_map,types_tuple
 
             _task_fit_3dspline(paras)
         # print("coucou here")
@@ -586,7 +586,7 @@ def fit_3dspline(dataobj,x_nodes,y_nodes,wv_nodes,
         for id,stamp_ids in enumerate(stamp_list):
 
             paras = stamp_ids, x_nodes, y_nodes,wv_nodes,\
-                    wv_ref, stellar_features, threshold, reg_mean_map, reg_std_map,types_tuple
+                    threshold, reg_mean_map, reg_std_map,types_tuple
             args_list.append(paras)
 
         try:
@@ -609,7 +609,7 @@ def _task_evaluate_3dspline(paras):
     """
 
     """
-    stamp_ids, x_nodes, y_nodes,wv_nodes, wv_ref, stellar_features, types_tuple = paras
+    stamp_ids, x_nodes, y_nodes,wv_nodes, types_tuple = paras
     mp_float_type, mp_bp_type = types_tuple
 
     # data_np = _arraytonumpy(shared_data, shared_data_shape, dtype=mp_float_type)
@@ -878,7 +878,7 @@ def evaluate_3dspline(ifux,ifuy,wvs,
         for id,stamp_ids in enumerate(stamp_list):
             print(id,len(stamp_list),stamp_ids)
             paras = stamp_ids, x_nodes, y_nodes,wv_nodes,\
-                    wv_ref, stellar_features, types_tuple
+                    types_tuple
 
             _task_evaluate_3dspline(paras)
         #     print("coucou")
@@ -897,7 +897,7 @@ def evaluate_3dspline(ifux,ifuy,wvs,
         for id,stamp_ids in enumerate(stamp_list):
 
             paras = stamp_ids, x_nodes, y_nodes,wv_nodes,\
-                    wv_ref, stellar_features, types_tuple
+                    types_tuple
             args_list.append(paras)
 
         try:
