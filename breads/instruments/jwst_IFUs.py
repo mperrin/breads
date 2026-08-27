@@ -1856,7 +1856,10 @@ class JWST_IFUs(ABC):
             reg_mean_map_init = None
             reg_std_map_init = None
 
-        stellar_features = self.star_func(self.wavelengths)
+        # Downcast the stellar_features array to float32 up front,
+        # since fit_3dspline copies this into a float32 # shared array anyway
+        # This gives a small memory savings in the parent process.
+        stellar_features = self.star_func(self.wavelengths).astype(np.float32)
 
         if iterative:
             N_iter = 2
