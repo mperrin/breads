@@ -502,7 +502,9 @@ def fit_3dspline(dataobj,x_nodes,y_nodes,wv_nodes,
     stellar_features_mp = RawArray(mp_float_type, nx * ny)
     stellar_features_np = _arraytonumpy(stellar_features_mp, data_shape, dtype=mp_float_type)
     if stellar_features is None:
-        stellar_features_np[:] = np.ones(dataobj.data.shape)
+        # Scalar fill: np.ones(...) would allocate a full-size float64 temporary
+        # just to write 1.0 into a float32 array. 1.0 is exact in float32.
+        stellar_features_np[:] = 1
     else:
         stellar_features_np[:] = stellar_features
 
@@ -810,7 +812,8 @@ def evaluate_3dspline(ifux,ifuy,wvs,
     stellar_features_mp = RawArray(mp_float_type, data_size)
     stellar_features_np = _arraytonumpy(stellar_features_mp, data_shape, dtype=mp_float_type)
     if stellar_features is None:
-        stellar_features_np[:] = np.ones(ifux.shape)
+        # Scalar fill: see the equivalent note in fit_3dspline.
+        stellar_features_np[:] = 1
     else:
         stellar_features_np[:] = stellar_features
 
