@@ -23,12 +23,15 @@ import warnings
 import matplotlib
 import numpy as np
 import pytest
+from scipy.linalg import cho_factor
 from scipy.special import loggamma
 
 matplotlib.use("Agg")  # fit.py imports pyplot; keep tests headless
 
+import breads.fit
 from breads.fit import fitfm, log_prob, combined_log_prob, nlog_prob, _get_lsq_fit
 from breads.instruments import Instrument
+from breads.utils.splines import get_spline_model
 
 
 # --------------------------------------------------------------------------
@@ -1623,3 +1626,164 @@ def test_combined_log_prob_ignores_its_bounds_argument(noisy_gaussian_instrument
     # Assert
     assert np.isfinite(with_bounds)
     assert with_bounds == pytest.approx(without_bounds, rel=1e-12)
+
+
+# --------------------------------------------------------------------------
+# Test the Cholesky fast path for unbounded solves
+#
+# fitfm() can solve the unbounded problem from the normal equations via a
+# single Cholesky factorization instead of calling lsq_linear and separately
+# inverting M^T M. It is guarded so that it silently falls back on systems
+# where forming the normal equations would lose accuracy. These tests pin both
+# halves of that contract: that the fast path really does engage on well posed
+# problems, and that it really does decline on ill posed ones.
+#
+# Asserting engagement (whether the cholesky path is taken) matters.
+# Without it, every one of these tests would still pass if the fast path
+# stopped engaging altogether, because the lsq_linear fallback produces the same numbers..
+# --------------------------------------------------------------------------
+
+def _spy_on_cholesky(monkeypatch):
+    """Patch the Cholesky helper with a wrapper to record whether or not that function was called.
+    Returns the record."""
+    record = {"calls": 0, "engaged": 0}
+    original = breads.fit._try_cholesky_normal_equations
+
+    def spy(M, d, max_cond=1e12):
+        result = original(M, d, max_cond=max_cond)
+        record["calls"] += 1
+        record["engaged"] += result is not None
+        return result
+
+    monkeypatch.setattr(breads.fit, "_try_cholesky_normal_equations", spy)
+    return record
+
+
+def _matrix_with_condition_number(cond, n_rows=60, n_cols=6, seed=0):
+    """Build a full-rank matrix with a prescribed condition number."""
+    rng = np.random.default_rng(seed)
+    left, _ = np.linalg.qr(rng.normal(size=(n_rows, n_cols)))
+    right, _ = np.linalg.qr(rng.normal(size=(n_cols, n_cols)))
+    singular_values = np.geomspace(1.0, 1.0 / cond, n_cols)
+    return (left * singular_values) @ right.T
+
+
+def test_cholesky_fast_path_engages_on_well_conditioned_fit(
+        monkeypatch, noisy_gaussian_instrument):
+    """Tests that the fast path is actually taken for an ordinary unbounded fit."""
+    # Arrange
+    record = _spy_on_cholesky(monkeypatch)
+
+    # Act
+    fitfm(
+        nonlin_paras=[GAUSS_MU_TRUE],
+        dataobj=noisy_gaussian_instrument,
+        fm_func=gaussian_fm_func,
+        fm_paras={"sigma": GAUSS_SIGMA},
+    )
+
+    # Assert
+    assert record["calls"] == 1, "the fast path should be attempted exactly once"
+    assert record["engaged"] == 1, "a well-conditioned unbounded fit should use Cholesky"
+
+
+def test_fast_unbounded_solve_false_skips_cholesky_and_agrees(
+        monkeypatch, noisy_gaussian_instrument):
+    """`Test that `fast_unbounded_solve=False`` restores the lsq_linear path, same answer."""
+    # Arrange
+    common = dict(
+        nonlin_paras=[GAUSS_MU_TRUE],
+        dataobj=noisy_gaussian_instrument,
+        fm_func=gaussian_fm_func,
+        fm_paras={"sigma": GAUSS_SIGMA},
+    )
+    record = _spy_on_cholesky(monkeypatch)
+
+    # Act
+    fast = fitfm(**common, fast_unbounded_solve=True)
+    calls_after_fast = record["calls"]
+    slow = fitfm(**common, fast_unbounded_solve=False)
+
+    # Assert: opting out really does bypass the helper
+    assert calls_after_fast == 1 and record["engaged"] == 1
+    assert record["calls"] == calls_after_fast, \
+        "fast_unbounded_solve=False must not attempt the Cholesky path"
+
+    # Assert: and the two paths agree. The normal equations square the
+    # condition number, so this is equality to rounding, not bit-for-bit.
+    log_prob_fast, rchi2_fast, paras_fast, err_fast = fast
+    log_prob_slow, rchi2_slow, paras_slow, err_slow = slow
+    np.testing.assert_allclose(paras_fast, paras_slow, rtol=1e-9, atol=1e-11)
+    np.testing.assert_allclose(err_fast, err_slow, rtol=1e-9, atol=1e-11)
+    assert log_prob_fast == pytest.approx(log_prob_slow, rel=1e-9)
+    assert rchi2_fast == pytest.approx(rchi2_slow, rel=1e-9)
+
+
+def test_cholesky_declines_rank_deficient_model():
+    """An exactly duplicated column is rejected by the positive-definite guard."""
+    # Arrange: third column is an exact copy of the first
+    rng = np.random.default_rng(1)
+    M = rng.normal(size=(80, 3))
+    M[:, 2] = M[:, 0]
+    d = rng.normal(size=80)
+
+    # Act / Assert
+    assert breads.fit._try_cholesky_normal_equations(M, d) is None
+
+
+def test_cholesky_declines_rank_deficient_model_that_factors_successfully():
+    """Rank deficiency that ``cho_factor`` fails to detect is still rejected.
+
+    This is the case that motivates the second guard. When a column is a linear
+    *combination* of others rather than an exact copy, rounding leaves a small
+    positive pivot instead of a negative one, so ``cho_factor`` succeeds and
+    would hand back a meaningless solution. Only the condition number estimate
+    catches it. An exactly duplicated column, by contrast, is caught by
+    ``cho_factor`` itself, so it does not exercise this guard.
+    """
+    # Arrange: a realistic spline design matrix with one dependent column
+    rng = np.random.default_rng(1)
+    nodes = np.linspace(0, 1, 20)
+    samples = rng.uniform(0.001, 0.999, 2000)
+    M = get_spline_model(nodes, samples, spline_degree=3)
+    M[:, 7] = M[:, 4] + M[:, 6]
+    d = rng.normal(size=M.shape[0])
+
+    # Assert the premise: this really does slip past cho_factor
+    cho_factor(M.T @ M)  # raises if it does not
+
+    # Act / Assert: but the conditioning guard rejects it anyway
+    assert breads.fit._try_cholesky_normal_equations(M, d) is None
+
+
+def test_cholesky_declines_ill_conditioned_model():
+    """Full rank but badly conditioned systems fall back to lsq_linear."""
+    # Arrange: cond(M) = 1e8, so cond(M^T M) ~ 1e16, far above the 1e12 limit
+    M = _matrix_with_condition_number(1e8)
+    d = np.random.default_rng(2).normal(size=M.shape[0])
+
+    # Act / Assert
+    assert breads.fit._try_cholesky_normal_equations(M, d) is None
+
+    # A well-conditioned matrix built the same way is accepted, which shows the
+    # rejection above is due to conditioning and not to the construction.
+    well_conditioned = _matrix_with_condition_number(1e2)
+    assert breads.fit._try_cholesky_normal_equations(
+        well_conditioned, d[:well_conditioned.shape[0]]) is not None
+
+
+def test_cholesky_declines_empty_model():
+    """A model matrix with no valid columns is rejected rather than crashing."""
+    assert breads.fit._try_cholesky_normal_equations(
+        np.zeros((10, 0)), np.zeros(10)) is None
+
+
+@pytest.mark.parametrize("lower, upper, expected", [
+    ([-np.inf, -np.inf], [np.inf, np.inf], True),
+    ([0.0, -np.inf], [np.inf, np.inf], False),
+    ([-np.inf, -np.inf], [np.inf, 5.0], False),
+])
+def test_bounds_are_infinite_detection(lower, upper, expected):
+    """Only wholly infinite bounds qualify for the fast path."""
+    assert breads.fit._bounds_are_infinite(
+        (np.array(lower), np.array(upper))) is expected
